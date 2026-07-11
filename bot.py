@@ -4,6 +4,8 @@ import logging
 import os
 
 from aiogram import Bot, Dispatcher, F, Router
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -25,6 +27,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 TELEGRAM_MAX_LEN = 4096
+DIVIDER = "──────────"
+
+DIM_EMOJI = {"PDI": "🏛", "UAI": "🌀", "IDV": "👤"}
 
 TEST_TITLES = {
     "tuckman_main": "Такман, базовый (6 сценариев)",
@@ -50,7 +55,8 @@ def main_menu_kb() -> InlineKeyboardMarkup:
 
 def options_kb(letters) -> InlineKeyboardMarkup:
     row = [InlineKeyboardButton(text=letter, callback_data=f"ans:{letter}") for letter in letters]
-    return InlineKeyboardMarkup(inline_keyboard=[row])
+    cancel_row = [InlineKeyboardButton(text="❌ Прервать тест", callback_data="cancel_test")]
+    return InlineKeyboardMarkup(inline_keyboard=[row, cancel_row])
 
 
 def get_flat_scenarios(test_key: str):
@@ -83,9 +89,9 @@ def _scenario_fields(test_key: str, scenario):
 
 def format_scenario_text(idx: int, total: int, test_key: str, scenario) -> str:
     text, options = _scenario_fields(test_key, scenario)
-    lines = [f"Сценарий {idx + 1} из {total}.", "", text, ""]
+    lines = [f"<b>Сценарий {idx + 1} из {total}</b>", "", text, ""]
     for letter, opt_text in options.items():
-        lines.append(f"{letter}) {opt_text}")
+        lines.append(f"<b>{letter})</b> {opt_text}")
     return "\n".join(lines)
 
 
@@ -110,10 +116,10 @@ async def send_long(message: Message, text: str):
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(
-        "Диагностика Human Foresight.\n\n"
+        "<b>Диагностика Human Foresight</b>\n\n"
         "Четыре теста: два по стадиям развития команды (Такман), два по культурному "
         "профилю команды (Хофстеде: дистанция власти, избегание неопределённости, "
-        "индивидуализм/коллективизм).\n\n" + data.DISCLAIMER
+        "индивидуализм/коллективизм).\n\n⚠️ " + data.DISCLAIMER
     )
     await message.answer("Выбери тест:", reply_markup=main_menu_kb())
 
@@ -146,6 +152,17 @@ async def ask_scenario(message: Message, state: FSMContext):
     text = format_scenario_text(idx, len(scenarios), test_key, scenario)
     letters = option_letters(test_key, scenario)
     await message.answer(text, reply_markup=options_kb(letters))
+
+
+@router.callback_query(TestStates.answering, F.data == "cancel_test")
+async def on_cancel_test(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await callback.message.answer("Тест прерван. Выбери другой:", reply_markup=main_menu_kb())
+    await callback.answer()
 
 
 @router.callback_query(TestStates.answering, F.data.startswith("ans:"))
@@ -210,34 +227,36 @@ def tuckman_report(counts: dict) -> str:
     dominant, dom_n = ranked[0]
     secondary, sec_n = ranked[1]
 
-    lines = ["Результат:", ""]
+    lines = ["<b>📊 Результат</b>", ""]
     for stage, n in ranked:
-        lines.append(f"{data.TUCKMAN_STAGE_NAMES[stage]}: {n}")
+        lines.append(f"• {data.TUCKMAN_STAGE_NAMES[stage]}: {n}")
+    lines.append("")
+    lines.append(DIVIDER)
     lines.append("")
 
     if dom_n == sec_n:
         lines.append(
-            "Две стадии набрали одинаковое количество. Это переходное состояние системы, "
-            "не ошибка измерения. Ниже интерпретация обеих."
+            "⚖️ <b>Две стадии набрали одинаковое количество.</b> Это переходное состояние "
+            "системы, не ошибка измерения. Ниже интерпретация обеих."
         )
         lines.append("")
         for stage in (dominant, secondary):
-            lines.append(f"{data.TUCKMAN_STAGE_NAMES[stage]} доминирует.")
+            lines.append(f"<b>{data.TUCKMAN_STAGE_NAMES[stage]} доминирует</b>")
             lines.append(data.TUCKMAN_STAGE_TEXT[stage])
             lines.append("")
     else:
         lines.append(
-            f"Команда преимущественно на {data.TUCKMAN_STAGE_NAMES[dominant]} "
-            f"с признаками {data.TUCKMAN_STAGE_NAMES[secondary]}."
+            f"Команда преимущественно на <b>{data.TUCKMAN_STAGE_NAMES[dominant]}</b> "
+            f"с признаками <b>{data.TUCKMAN_STAGE_NAMES[secondary]}</b>."
         )
         lines.append("")
-        lines.append(f"{data.TUCKMAN_STAGE_NAMES[dominant]} доминирует.")
+        lines.append(f"<b>{data.TUCKMAN_STAGE_NAMES[dominant]} доминирует</b>")
         lines.append(data.TUCKMAN_STAGE_TEXT[dominant])
         combo = data.TUCKMAN_COMBO_TEXT.get((dominant, secondary))
         if combo:
             lines.append("")
             lines.append(
-                f"{data.TUCKMAN_STAGE_NAMES[dominant]} + {data.TUCKMAN_STAGE_NAMES[secondary]}:"
+                f"<b>{data.TUCKMAN_STAGE_NAMES[dominant]} + {data.TUCKMAN_STAGE_NAMES[secondary]}</b>"
             )
             lines.append(combo)
 
@@ -245,19 +264,21 @@ def tuckman_report(counts: dict) -> str:
 
 
 def hofstede_report(results: dict) -> str:
-    lines = ["Результат по трём измерениям:", ""]
+    lines = ["<b>📊 Результат по трём измерениям</b>", ""]
     for dim in ("PDI", "UAI", "IDV"):
         r = results[dim]
         label = data.HOFSTEDE_ZONE_LABELS[dim][r["zone"]]
-        lines.append(f"{data.HOFSTEDE_DIM_NAMES[dim]}: {r['score']} ({label})")
+        lines.append(f"{DIM_EMOJI[dim]} <b>{data.HOFSTEDE_DIM_NAMES[dim]}</b>: {r['score']} ({label})")
     lines.append("")
     lines.append(
         "Эти три числа не складываются в единый балл. Читайте их как комбинацию, не как сумму."
     )
     lines.append("")
+    lines.append(DIVIDER)
+    lines.append("")
     for dim in ("PDI", "UAI", "IDV"):
         r = results[dim]
-        lines.append(f"{data.HOFSTEDE_DIM_NAMES[dim]}.")
+        lines.append(f"{DIM_EMOJI[dim]} <b>{data.HOFSTEDE_DIM_NAMES[dim]}</b>")
         lines.append(data.HOFSTEDE_ZONE_TEXT[dim][r["zone"]])
         lines.append("")
     return "\n".join(lines).rstrip()
@@ -284,7 +305,7 @@ async def main():
     if not token:
         raise RuntimeError("Не задан BOT_TOKEN (переменная окружения). См. .env")
 
-    bot = Bot(token=token)
+    bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(router)
 
